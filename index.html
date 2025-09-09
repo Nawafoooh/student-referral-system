@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>منصة تحويل الطلاب - متوسطة المنذر بن عمرو الأنصاري</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap');
+        body {
+            font-family: 'Tajawal', sans-serif;
+            background: linear-gradient(135deg, #1e7e34 0%, #28a745 50%, #20c997 100%);
+            min-height: 100vh;
+            padding: 20px;
+            direction: rtl;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+            padding: 2rem;
+        }
+        .form-section {
+            display: none;
+        }
+        .form-section.active {
+            display: block;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex flex-col items-center py-10">
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, collection, onSnapshot, query, addDoc, serverTimestamp, getDoc, updateDoc, deleteDoc, getDocs, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        let app;
+        let auth;
+        let db;
+        let userId;
+        
+        // Global variables for handling the referral form
+        let editingReferralId = null;
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initializeFirebaseAndAuth();
+            const editForm = document.getElementById('edit-referral-form');
+            if (editForm) {
+                editForm.addEventListener('submit', handleFormSubmit);
+            }
+            const backToListBtn = document.getElementById('back-to-list');
+            if (backToListBtn) {
+                backToListBtn.addEventListener('click', showReferralList);
+            }
+            const backFromDetailsBtn = document.getElementById('back-from-details');
+            if (backFromDetailsBtn) {
+                backFromDetailsBtn.addEventListener('click', showReferralList);
+            }
+            const addNewReferralBtn = document.getElementById('add-new-referral');
+            if (addNewReferralBtn) {
+                addNewReferralBtn.addEventListener('click', showNewReferralForm);
+            }
+            const clearFormBtn = document.getElementById('clear-form-btn');
+            if (clearFormBtn) {
+                clearFormBtn.addEventListener('click', clearForm);
+            }
+        });
+
+        // Initialize Firebase Authentication
+        async function initializeFirebaseAndAuth() {
+            try {
+                // Safely access global variables provided by the environment
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : '';
+                
+                // Parse the firebase config safely
+                let firebaseConfig = {};
+                if (typeof __firebase_config !== 'undefined') {
+                    try {
+                        const parsedConfig = JSON.parse(__firebase_config);
+                        if (parsedConfig && parsedConfig.apiKey) {
+                            firebaseConfig = parsedConfig;
+                        } else {
+                            console.warn("Global Firebase config is invalid or missing API key. Using fallback config.");
+                        }
+                    } catch (e) {
+                        console.error("Failed to parse global Firebase config. Using fallback config.", e);
+                    }
+                }
+                
+                // Use a fallback config if the provided one is not valid
+                if (!firebaseConfig.apiKey) {
+                    firebaseConfig = {
+                        apiKey: "AIzaSyDsii4NVTrm8w3H-6Q-MvSlpNt-3bOOdRA",
+                        authDomain: "student-referral-system.firebaseapp.com",
+                        projectId: "student-referral-system",
+                        storageBucket: "student-referral-system.firebasestorage.app",
+                        messagingSenderId: "733058040690",
+                        appId: "1:733058040690:web:8433171a09e55dd04913eb"
+                    };
+                }
+
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                    console.log("Signed in with custom token.");
+                } else {
+                    await signInAnonymously(auth);
+                    console.log("Signed in anonymously.");
+                }
+                userId = auth.currentUser.uid;
+                document.getElementById('user-id-display').textContent = `معرف المستخدم: ${userId}`;
+                setupRealtimeListener(appId);
+            } catch (error) {
+                console.error("Authentication Error:", error);
+                showErrorMessage("فشل في المصادقة. يرجى المحاولة مرة أخرى.");
+            }
+        }
+        
+        // Handle form submission (Add or Update)
+        async function handleFormSubmit(event) {
+            event.preventDefault();
+            const form = document.getElementById('edit-referral-form');
+            const referralData = {
+                studentName: form.querySelector('#studentName').value,
+                studentClass: form.querySelector('#studentClass').value,
+                referralReason: form.querySelector('#referralReason').value,
+                behaviourDescription: form.querySelector('#behaviourDescription').value,
+                firstInfraction: form.querySelector('#behaviourInfraction1').value,
+                firstAction: form.querySelector('#takenAction1').value,
+                secondInfraction: form.querySelector('#behaviourInfraction2').value,
+                secondAction: form.querySelector('#takenAction2').value,
+                thirdInfraction: form.querySelector('#behaviourInfraction3').value,
+                thirdAction: form.querySelector('#takenAction3').value,
+                date: form.querySelector('#referralDate').value,
+                timestamp: serverTimestamp()
+            };
+            
+            try {
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                const referralsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/referrals`);
+                
+                if (editingReferralId) {
+                    // Update existing referral
+                    const referralDocRef = doc(referralsCollectionRef, editingReferralId);
+                    await updateDoc(referralDocRef, referralData);
+                    showMessage("تم تحديث النموذج بنجاح!");
+                } else {
+                    // Add new referral
+                    await addDoc(referralsCollectionRef, referralData);
+                    showMessage("تم حفظ النموذج بنجاح!");
+                }
+                
+                clearForm();
+                showReferralList();
+            } catch (error) {
+                console.error("Error saving referral:", error);
+                showErrorMessage("فشل في حفظ النموذج. يرجى التحقق من اتصالك.");
+            }
+        }
+        
+        // Setup real-time listener for referrals
+        function setupRealtimeListener(appId) {
+            const referralsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/referrals`);
+            
+            // To avoid the need for an index, we will fetch all documents and sort them in memory.
+            onSnapshot(referralsCollectionRef, (querySnapshot) => {
+                const referrals = [];
+                querySnapshot.forEach((doc) => {
+                    referrals.push({ id: doc.id, ...doc.data() });
+                });
+                
+                // Sort by timestamp if it exists
+                referrals.sort((a, b) => {
+                    if (a.timestamp && b.timestamp) {
+                        return b.timestamp.seconds - a.timestamp.seconds;
+                    }
+                    return 0;
+                });
+                
+                renderReferralList(referrals);
+            });
+        }
+        
+        // Render the list of referrals
+        function renderReferralList(referrals) {
+            const listContainer = document.getElementById('referral-list');
+            listContainer.innerHTML = ''; // Clear previous list
+            
+            if (referrals.length === 0) {
+                listContainer.innerHTML = '<p class="text-center text-gray-500">لا توجد نماذج محفوظة. ابدأ بإضافة نموذج جديد.</p>';
+                return;
+            }
+            
+            referrals.forEach(referral => {
+                const referralItem = document.createElement('div');
+                referralItem.classList.add('bg-gray-100', 'p-4', 'rounded-lg', 'shadow-sm', 'mb-4', 'flex', 'justify-between', 'items-center', 'border-r-4', 'border-green-500');
+                referralItem.innerHTML = `
+                    <div>
+                        <h3 class="font-bold text-lg text-green-700">${referral.studentName}</h3>
+                        <p class="text-sm text-gray-600">الصف: ${referral.studentClass}</p>
+                        <p class="text-xs text-gray-400">تاريخ: ${referral.date}</p>
+                    </div>
+                    <div class="space-x-2 flex">
+                        <button onclick="viewReferral('${referral.id}')" class="bg-blue-500 hover:bg-blue-600 text-white p-2 rounded-full w-10 h-10 flex items-center justify-center transition-transform transform hover:scale-110">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                        <button onclick="editReferral('${referral.id}')" class="bg-yellow-500 hover:bg-yellow-600 text-white p-2 rounded-full w-10 h-10 flex items-center justify-center transition-transform transform hover:scale-110">
+                            <i class="fas fa-edit"></i>
+                        </button>
+                        <button onclick="deleteReferral('${referral.id}')" class="bg-red-500 hover:bg-red-600 text-white p-2 rounded-full w-10 h-10 flex items-center justify-center transition-transform transform hover:scale-110">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
+                `;
+                listContainer.appendChild(referralItem);
+            });
+        }
+        
+        // Functions to show/hide sections
+        function showReferralList() {
+            document.getElementById('list-section').classList.add('active');
+            document.getElementById('form-section').classList.remove('active');
+            document.getElementById('details-section').classList.remove('active');
+        }
+        
+        function showNewReferralForm() {
+            clearForm();
+            editingReferralId = null;
+            document.getElementById('list-section').classList.remove('active');
+            document.getElementById('form-section').classList.add('active');
+            document.getElementById('details-section').classList.remove('active');
+            document.getElementById('form-title').textContent = 'إضافة نموذج تحويل جديد';
+        }
+        
+        // Edit Referral
+        window.editReferral = async function(referralId) {
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const referralsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/referrals`);
+            const referralDocRef = doc(referralsCollectionRef, referralId);
+            const docSnap = await getDoc(referralDocRef);
+            
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                document.getElementById('studentName').value = data.studentName;
+                document.getElementById('studentClass').value = data.studentClass;
+                document.getElementById('referralReason').value = data.referralReason;
+                document.getElementById('behaviourDescription').value = data.behaviourDescription;
+                document.getElementById('behaviourInfraction1').value = data.firstInfraction;
+                fillActionDropdown(1);
+                document.getElementById('takenAction1').value = data.firstAction;
+                document.getElementById('behaviourInfraction2').value = data.secondInfraction;
+                fillActionDropdown(2);
+                document.getElementById('takenAction2').value = data.secondAction;
+                document.getElementById('behaviourInfraction3').value = data.thirdInfraction;
+                fillActionDropdown(3);
+                document.getElementById('takenAction3').value = data.thirdAction;
+                document.getElementById('referralDate').value = data.date;
+                
+                editingReferralId = referralId;
+                document.getElementById('form-title').textContent = 'تعديل النموذج';
+                showFormSection();
+            } else {
+                showErrorMessage("النموذج غير موجود.");
+            }
+        }
+        
+        // View Referral Details
+        window.viewReferral = async function(referralId) {
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const referralsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/referrals`);
+            const referralDocRef = doc(referralsCollectionRef, referralId);
+            const docSnap = await getDoc(referralDocRef);
+            
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                document.getElementById('details-student-name').textContent = data.studentName;
+                document.getElementById('details-student-class').textContent = data.studentClass;
+                document.getElementById('details-referral-reason').textContent = data.referralReason;
+                document.getElementById('details-behaviour-description').textContent = data.behaviourDescription;
+                document.getElementById('details-date').textContent = data.date;
+                
+                const infractionsList = document.getElementById('details-infractions-list');
+                infractionsList.innerHTML = '';
+                if(data.firstInfraction) {
+                    infractionsList.innerHTML += `<li>${data.firstInfraction} - ${data.firstAction}</li>`;
+                }
+                if(data.secondInfraction) {
+                    infractionsList.innerHTML += `<li>${data.secondInfraction} - ${data.secondAction}</li>`;
+                }
+                if(data.thirdInfraction) {
+                    infractionsList.innerHTML += `<li>${data.thirdInfraction} - ${data.thirdAction}</li>`;
+                }
+                
+                document.getElementById('details-section').classList.add('active');
+                document.getElementById('list-section').classList.remove('active');
+                document.getElementById('form-section').classList.remove('active');
+            } else {
+                showErrorMessage("النموذج غير موجود.");
+            }
+        }
+        
+        // Delete Referral
+        window.deleteReferral = async function(referralId) {
+            const confirmationModal = document.getElementById('confirmation-modal');
+            const confirmDeleteButton = document.getElementById('confirm-delete-btn');
+            const cancelDeleteButton = document.getElementById('cancel-delete-btn');
+            
+            confirmationModal.classList.remove('hidden');
+            
+            confirmDeleteButton.onclick = async () => {
+                try {
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                    const referralsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/referrals`);
+                    const referralDocRef = doc(referralsCollectionRef, referralId);
+                    await deleteDoc(referralDocRef);
+                    showMessage("تم حذف النموذج بنجاح!");
+                } catch (error) {
+                    console.error("Error deleting referral:", error);
+                    showErrorMessage("فشل في حذف النموذج.");
+                } finally {
+                    confirmationModal.classList.add('hidden');
+                }
+            };
+            
+            cancelDeleteButton.onclick = () => {
+                confirmationModal.classList.add('hidden');
+            };
+        }
+        
+        // Utility Functions
+        function showFormSection() {
+            document.getElementById('list-section').classList.remove('active');
+            document.getElementById('form-section').classList.add('active');
+            document.getElementById('details-section').classList.remove('active');
+        }
+        
+        function clearForm() {
+            document.getElementById('edit-referral-form').reset();
+            editingReferralId = null;
+            document.getElementById('form-title').textContent = 'إضافة نموذج تحويل جديد';
+            // Reset dropdowns
+            fillActionDropdown(1);
+            fillActionDropdown(2);
+            fillActionDropdown(3);
+        }
+
+        function showMessage(message) {
+            const messageBox = document.getElementById('message-box');
+            messageBox.textContent = message;
+            messageBox.classList.remove('hidden', 'bg-red-500');
+            messageBox.classList.add('bg-green-500', 'block');
+            setTimeout(() => {
+                messageBox.classList.add('hidden');
+            }, 3000);
+        }
+
+        function showErrorMessage(message) {
+            const messageBox = document.getElementById('message-box');
+            messageBox.textContent = message;
+            messageBox.classList.remove('hidden', 'bg-green-500');
+            messageBox.classList.add('bg-red-500', 'block');
+            setTimeout(() => {
+                messageBox.classList.add('hidden');
+            }, 5000);
+        }
+
+        const actionsMap = {
+            "كثرة التأخر الصباحي":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"],
+            "كثرة الغياب بدون عذر مقبول":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"],
+            "الغياب عن الحصص أو الهروب منها":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"],
+            "التأخر عن الحصص أو الخروج منها بدون إذن":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"],
+            "إحداث الفوضى في الفصل أو في المدرسة":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"],
+            "العبث بممتلكات المدرسة أو زملائه":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"],
+            "عدم الالتزام بالزي المدرسي":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"],
+            "إحضار ما يخل بالقيم الإسلامية أو الآداب العامة":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"],
+            "استخدام الهاتف أو أي جهاز إلكتروني آخر":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"],
+            "عدم إحضار الكتب المدرسية":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"],
+            "تكرار خروج الطلاب ظهراً من البوابة أو التجمهر حولها":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"],
+            "أخرى":
+                ["تنبيه شفهي من قبل المعلم","التنبيه شفهي من قبل المعلم للمرة الثانية","أخذ تعهد خطي من الطالب بالانضباط","إشعار ولي الأمر كتابياً وهاتفياً بمخالفة الطالب السلوكية","1- تنبيه الطالب المخالف من قبل وكيل المدرسة","2- استدعاء ولي الأمر وإخطاره بمخالفة الطالب السلوكية","3- حسم درجة من السلوك مع التمكين من فرصة التعويض"]
+        };
+
+        function fillActionDropdown(actionNumber) {
+            const infractionSel = document.getElementById(`behaviourInfraction${actionNumber}`);
+            const actionSel = document.getElementById(`takenAction${actionNumber}`);
+            
+            // Check if elements exist before accessing their properties
+            if (!infractionSel || !actionSel) {
+                console.error(`Element for infraction or action number ${actionNumber} not found.`);
+                return;
+            }
+
+            const selected = infractionSel.value;
+
+            actionSel.innerHTML = '<option value="">-- اختر الإجراء --</option>';
+            if (actionsMap[selected]) {
+                actionsMap[selected].forEach(act => {
+                    const opt = document.createElement('option');
+                    opt.value = act;
+                    opt.textContent = act;
+                    actionSel.appendChild(opt);
+                });
+            }
+        }
+        
+        // PDF and Share functions remain as in the original file, slightly modified to handle the new form IDs and layout
+        async function generateAndSharePDF() {
+            const content = document.getElementById('form-section');
+            const formContainer = content.cloneNode(true);
+            
+            // Remove the buttons from the cloned content
+            const buttonsContainer = formContainer.querySelector('#form-buttons');
+            if(buttonsContainer) {
+                buttonsContainer.remove();
+            }
+
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF('p', 'pt', 'a4', true);
+            
+            // Generate the PDF from the cloned content
+            await doc.html(formContainer, {
+                callback: function (doc) {
+                    const pdfOutput = doc.output('blob');
+                    const pdfUrl = URL.createObjectURL(pdfOutput);
+
+                    if (navigator.share) {
+                        navigator.share({
+                            title: 'نموذج تحويل طالب',
+                            text: 'نموذج تحويل طالب من متوسطة المنذر بن عمرو الأنصاري',
+                            url: pdfUrl
+                        }).catch(console.error);
+                    } else {
+                        const link = document.createElement('a');
+                        link.href = pdfUrl;
+                        link.download = 'نموذج-تحويل.pdf';
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        showMessage("تم تحميل الملف بصيغة PDF.");
+                    }
+                },
+                x: 10,
+                y: 10,
+                width: 580,
+                windowWidth: 1000,
+                html2canvas: {
+                    scale: 0.6
+                }
+            });
+        }
+    </script>
+
+    <!-- UI Sections -->
+    <div id="message-box" class="fixed top-5 left-1/2 -translate-x-1/2 z-50 p-4 rounded-lg shadow-lg text-white font-bold transition-all duration-300 hidden"></div>
+
+    <!-- Referral List Section -->
+    <div id="list-section" class="container w-full active">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-3xl font-bold text-green-700">النماذج المحفوظة</h1>
+            <button id="add-new-referral" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-full shadow-lg transition-transform transform hover:scale-105">
+                <i class="fas fa-plus"></i> نموذج جديد
+            </button>
+        </div>
+        <div id="referral-list" class="space-y-4">
+            <!-- Referrals will be injected here by JS -->
+        </div>
+        <div class="mt-8 text-center text-gray-500 text-sm">
+            <p id="user-id-display">معرف المستخدم: </p>
+        </div>
+    </div>
+
+    <!-- Form Section -->
+    <div id="form-section" class="container w-full form-section">
+        <h1 id="form-title" class="text-3xl font-bold text-center mb-8 text-green-700">إضافة نموذج تحويل جديد</h1>
+        <form id="edit-referral-form" class="space-y-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Personal Info -->
+                <div>
+                    <label for="studentName" class="block text-sm font-medium text-gray-700">اسم الطالب</label>
+                    <input type="text" id="studentName" name="studentName" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2" required>
+                </div>
+                <div>
+                    <label for="studentClass" class="block text-sm font-medium text-gray-700">الصف الدراسي</label>
+                    <input type="text" id="studentClass" name="studentClass" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2" required>
+                </div>
+            </div>
+
+            <!-- Referral Details -->
+            <div>
+                <label for="referralReason" class="block text-sm font-medium text-gray-700">سبب التحويل</label>
+                <textarea id="referralReason" name="referralReason" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2" required></textarea>
+            </div>
+            <div>
+                <label for="behaviourDescription" class="block text-sm font-medium text-gray-700">وصف السلوك</label>
+                <textarea id="behaviourDescription" name="behaviourDescription" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2" required></textarea>
+            </div>
+            
+            <!-- Infraction and Action -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label for="behaviourInfraction1" class="block text-sm font-medium text-gray-700">المخالفة الأولى</label>
+                    <select id="behaviourInfraction1" onchange="fillActionDropdown(1)" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2" required>
+                        <option value="">-- اختر المخالفة --</option>
+                        <option value="كثرة التأخر الصباحي">كثرة التأخر الصباحي</option>
+                        <option value="كثرة الغياب بدون عذر مقبول">كثرة الغياب بدون عذر مقبول</option>
+                        <option value="الغياب عن الحصص أو الهروب منها">الغياب عن الحصص أو الهروب منها</option>
+                        <option value="التأخر عن الحصص أو الخروج منها بدون إذن">التأخر عن الحصص أو الخروج منها بدون إذن</option>
+                        <option value="إحداث الفوضى في الفصل أو في المدرسة">إحداث الفوضى في الفصل أو في المدرسة</option>
+                        <option value="العبث بممتلكات المدرسة أو زملائه">العبث بممتلكات المدرسة أو زملائه</option>
+                        <option value="عدم الالتزام بالزي المدرسي">عدم الالتزام بالزي المدرسي</option>
+                        <option value="إحضار ما يخل بالقيم الإسلامية أو الآداب العامة">إحضار ما يخل بالقيم الإسلامية أو الآداب العامة</option>
+                        <option value="استخدام الهاتف أو أي جهاز إلكتروني آخر">استخدام الهاتف أو أي جهاز إلكتروني آخر</option>
+                        <option value="عدم إحضار الكتب المدرسية">عدم إحضار الكتب المدرسية</option>
+                        <option value="تكرار خروج الطلاب ظهراً من البوابة أو التجمهر حولها">تكرار خروج الطلاب ظهراً من البوابة أو التجمهر حولها</option>
+                        <option value="أخرى">أخرى</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="takenAction1" class="block text-sm font-medium text-gray-700">الإجراء المتخذ الأول</label>
+                    <select id="takenAction1" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2" required>
+                        <option value="">-- اختر الإجراء --</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Second Infraction and Action -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label for="behaviourInfraction2" class="block text-sm font-medium text-gray-700">المخالفة الثانية (اختياري)</label>
+                    <select id="behaviourInfraction2" onchange="fillActionDropdown(2)" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2">
+                        <option value="">-- اختر المخالفة --</option>
+                        <option value="كثرة التأخر الصباحي">كثرة التأخر الصباحي</option>
+                        <option value="كثرة الغياب بدون عذر مقبول">كثرة الغياب بدون عذر مقبول</option>
+                        <option value="الغياب عن الحصص أو الهروب منها">الغياب عن الحصص أو الهروب منها</option>
+                        <option value="التأخر عن الحصص أو الخروج منها بدون إذن">التأخر عن الحصص أو الخروج منها بدون إذن</option>
+                        <option value="إحداث الفوضى في الفصل أو في المدرسة">إحداث الفوضى في الفصل أو في المدرسة</option>
+                        <option value="العبث بممتلكات المدرسة أو زملائه">العبث بممتلكات المدرسة أو زملائه</option>
+                        <option value="عدم الالتزام بالزي المدرسي">عدم الالتزام بالزي المدرسي</option>
+                        <option value="إحضار ما يخل بالقيم الإسلامية أو الآداب العامة">إحضار ما يخل بالقيم الإسلامية أو الآداب العامة</option>
+                        <option value="استخدام الهاتف أو أي جهاز إلكتروني آخر">استخدام الهاتف أو أي جهاز إلكتروني آخر</option>
+                        <option value="عدم إحضار الكتب المدرسية">عدم إحضار الكتب المدرسية</option>
+                        <option value="تكرار خروج الطلاب ظهراً من البوابة أو التجمهر حولها">تكرار خروج الطلاب ظهراً من البوابة أو التجمهر حولها</option>
+                        <option value="أخرى">أخرى</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="takenAction2" class="block text-sm font-medium text-gray-700">الإجراء المتخذ الثاني</label>
+                    <select id="takenAction2" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2">
+                        <option value="">-- اختر الإجراء --</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Third Infraction and Action -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label for="behaviourInfraction3" class="block text-sm font-medium text-gray-700">المخالفة الثالثة (اختياري)</label>
+                    <select id="behaviourInfraction3" onchange="fillActionDropdown(3)" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2">
+                        <option value="">-- اختر المخالفة --</option>
+                        <option value="كثرة التأخر الصباحي">كثرة التأخر الصباحي</option>
+                        <option value="كثرة الغياب بدون عذر مقبول">كثرة الغياب بدون عذر مقبول</option>
+                        <option value="الغياب عن الحصص أو الهروب منها">الغياب عن الحصص أو الهروب منها</option>
+                        <option value="التأخر عن الحصص أو الخروج منها بدون إذن">التأخر عن الحصص أو الخروج منها بدون إذن</option>
+                        <option value="إحداث الفوضى في الفصل أو في المدرسة">إحداث الفوضى في الفصل أو في المدرسة</option>
+                        <option value="العبث بممتلكات المدرسة أو زملائه">العبث بممتلكات المدرسة أو زملائه</option>
+                        <option value="عدم الالتزام بالزي المدرسي">عدم الالتزام بالزي المدرسي</option>
+                        <option value="إحضار ما يخل بالقيم الإسلامية أو الآداب العامة">إحضار ما يخل بالقيم الإسلامية أو الآداب العامة</option>
+                        <option value="استخدام الهاتف أو أي جهاز إلكتروني آخر">استخدام الهاتف أو أي جهاز إلكتروني آخر</option>
+                        <option value="عدم إحضار الكتب المدرسية">عدم إحضار الكتب المدرسية</option>
+                        <option value="تكرار خروج الطلاب ظهراً من البوابة أو التجمهر حولها">تكرار خروج الطلاب ظهراً من البوابة أو التجمهر حولها</option>
+                        <option value="أخرى">أخرى</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="takenAction3" class="block text-sm font-medium text-gray-700">الإجراء المتخذ الثالث</label>
+                    <select id="takenAction3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2">
+                        <option value="">-- اختر الإجراء --</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Date -->
+            <div>
+                <label for="referralDate" class="block text-sm font-medium text-gray-700">التاريخ</label>
+                <input type="date" id="referralDate" name="referralDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2" required>
+            </div>
+            
+            <!-- Buttons -->
+            <div id="form-buttons" class="flex justify-between items-center mt-8">
+                <button type="button" id="back-to-list" class="bg-gray-400 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-full shadow-lg transition-transform transform hover:scale-105">
+                    <i class="fas fa-arrow-right ml-2"></i> العودة
+                </button>
+                <div class="space-x-4">
+                    <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-full shadow-lg transition-transform transform hover:scale-105">
+                        <i class="fas fa-save ml-2"></i> حفظ
+                    </button>
+                    <button type="button" id="clear-form-btn" class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-full shadow-lg transition-transform transform hover:scale-105">
+                        <i class="fas fa-eraser ml-2"></i> مسح
+                    </button>
+                    <button type="button" onclick="generateAndSharePDF()" class="bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 px-4 rounded-full shadow-lg transition-transform transform hover:scale-105">
+                        <i class="fas fa-download ml-2"></i> تحميل PDF
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <!-- Details Section -->
+    <div id="details-section" class="container w-full form-section">
+        <h1 class="text-3xl font-bold text-center mb-8 text-green-700">تفاصيل النموذج</h1>
+        <div class="space-y-4">
+            <p><strong>اسم الطالب:</strong> <span id="details-student-name"></span></p>
+            <p><strong>الصف الدراسي:</strong> <span id="details-student-class"></span></p>
+            <p><strong>سبب التحويل:</strong> <span id="details-referral-reason"></span></p>
+            <p><strong>وصف السلوك:</strong> <span id="details-behaviour-description"></span></p>
+            <p><strong>التاريخ:</strong> <span id="details-date"></span></p>
+            <h3 class="font-bold text-lg mt-6">المخالفات والإجراءات المتخذة:</h3>
+            <ul id="details-infractions-list" class="list-disc pr-8"></ul>
+        </div>
+        <div class="mt-8">
+            <button id="back-from-details" class="bg-gray-400 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-full shadow-lg transition-transform transform hover:scale-105">
+                <i class="fas fa-arrow-right ml-2"></i> العودة للقائمة
+            </button>
+        </div>
+    </div>
+    
+    <!-- Confirmation Modal (Hidden by default) -->
+    <div id="confirmation-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full">
+        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white text-center">
+            <div class="mt-3">
+                <h3 class="text-lg leading-6 font-medium text-gray-900">تأكيد الحذف</h3>
+                <div class="mt-2 px-7 py-3">
+                    <p class="text-sm text-gray-500">هل أنت متأكد أنك تريد حذف هذا النموذج؟ هذا الإجراء لا يمكن التراجع عنه.</p>
+                </div>
+                <div class="items-center px-4 py-3">
+                    <button id="confirm-delete-btn" class="px-4 py-2 bg-red-500 text-white text-base font-medium rounded-md w-24 shadow-sm hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500">
+                        تأكيد
+                    </button>
+                    <button id="cancel-delete-btn" class="px-4 py-2 bg-gray-300 text-gray-800 text-base font-medium rounded-md w-24 shadow-sm hover:bg-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-300 ml-2">
+                        إلغاء
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
